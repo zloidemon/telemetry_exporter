@@ -1,0 +1,158 @@
+#!/usr/bin/env python
+
+import asyncio
+import logging
+import sys
+
+from arun import ARun, ARunService
+from telemetry_exporter.config import (
+    TransportConfigKafka,
+    DatabaseConfigPgSQL,
+)
+from telemetry_exporter.transport import TransportKafkaConsumer
+from telemetry_exporter.serializers import (
+    SerializerJson,
+    SerializerMessagePack,
+)
+from telemetry_exporter.db import DatabasePgSQL
+
+
+logger = logging.getLogger('tesworkerd')
+
+
+class TESworker(ARunService):
+    def __init__(self, loop=None, **kwargs):
+        self.loop = loop
+        self.config = kwargs['config']
+        self.stats = kwargs['stats']
+        self.reconfig = kwargs['reconfig']
+        self.args = kwargs['args']
+        self.__reconnect_timeout = 5
+
+    @property
+    def signals(self):
+        return {}
+
+    async def create_consumer(self, consumer_id, group):
+
+        if self.args.serialization == 'msgpack':
+            serialization = SerializerMessagePack
+        else:
+            serialization = SerializerJson
+
+        while True:
+            try:
+                config = TransportConfigKafka()
+
+                config.port = self.args.bport
+                config.host = self.args.bhost
+                config.topic = self.args.btopic
+                config.proto = self.args.bproto
+                config.group_id = group
+                config.client_id = f'task_{consumer_id}'
+
+                if config.proto == 'SSL':
+                    config.cafile = self.args.bcafile
+                    config.certfile = self.args.bcertfile
+                    config.keyfile = self.args.bkeyfile
+                    config.password = self.args.bpassword
+
+                consumer = await TransportKafkaConsumer.connect(
+                    serialization, config,
+                )
+                logger.info(
+                    f'connected to broker[task_{consumer_id}] group[{group}] '
+                    f'{self.args.serialization}'
+                )
+                break
+            except Exception:
+                logger.fatal(
+                    f'creation consumer failed', exc_info=True
+                )
+                await asyncio.sleep(self.__reconnect_timeout)
+        return consumer
+
+    async def run(self):
+        try:
+            db_config = DatabaseConfigPgSQL()
+            db_config.host = self.args.dbhost
+            db_config.port = self.args.dbport
+            db_config.user = self.args.dbuser
+            db_config.password = self.args.dbpass
+            db_config.database = self.args.dbname
+
+            if self.args.dbssl:
+                db_config.cafile = self.args.dbcafile
+
+        except Exception:
+            logger.fatal('can not parse configuration', exc_info=True)
+            sys.exit(1)
+
+        while True:
+            logger.info(
+                'trying to connect: '
+                f'{db_config.host}:{db_config.port} '
+                f'ssl: {"on" if self.args.dbssl else "off"}'
+            )
+            try:
+                db = await DatabasePgSQL.connect(db_config)
+                logger.info(
+                    f'connected to {db.__class__.__name__}: '
+                    f'{db_config.host}:{db_config.port}'
+                )
+                break
+            except Exception:
+                logger.fatal(
+                    f'can not connect to {db_config.host}', exc_info=True)
+                await asyncio.sleep(self.__reconnect_timeout)
+
+        tasks = [
+            asyncio.create_task(
+                (
+                    await self.create_consumer(i, db_config.database)
+                ).process(db)
+            )
+            for i in range(0, self.args.bworkers)
+        ]
+
+        await asyncio.wait(tasks)
+
+
+args = {
+    '--dbhost': {'help': 'database host', 'type': str},
+    '--dbport': {'help': 'database port', 'type': int, 'default': 5432},
+    '--dbname': {'help': 'name of database', 'type': str},
+    '--dbpass': {'help': 'user password', 'type': str},
+    '--dbuser': {'help': 'database user', 'type': str},
+    '--dbssl': {'help': 'ssl connection', 'type': bool, 'default': None},
+    '--dbcafile': {'help': 'CA cert', 'type': str, 'default': None},
+    '--bworkers': {'help': 'transport workers', 'type': int},
+    '--btype': {
+        'help': 'broker type',
+        'choices': ['kafka', 'rabbitmq'],
+        'required': True,
+    },
+    '--bhost': {'help': 'transport uri', 'type': str, 'default': 'localhost'},
+    '--bport': {'help': 'transport uri', 'type': int, 'default': 9092},
+    '--btopic': {'help': 'transport topic', 'type': str, 'required': True},
+    '--bproto': {
+        'help': 'broker protocol',
+        'choices': ['PLAINTEXT', 'SSL'],
+        'default': 'PLAINTEXT',
+    },
+    '--bcafile': {'help': 'CA cert', 'type': str, 'default': None},
+    '--bcertfile': {'help': 'path to cert', 'type': str, 'default': None},
+    '--bkeyfile': {'help': 'path to keyfile', 'type': str, 'default': None},
+    '--bpassword': {'help': 'cert password', 'type': str, 'default': None},
+    '--serialization': {
+        'help': 'serialization format',
+        'choices': ['json', 'msgpack'],
+        'required': True,
+    },
+}
+
+ARun(
+    name='tesworkerd',
+    description='Telemetry Service Worker',
+    args=args
+).start(TESworker)

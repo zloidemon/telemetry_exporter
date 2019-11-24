@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+import asyncio
+import logging
+import sys
+import socket
+
+from arun import ARun, ARunService
+from telemetry_exporter.metrics import MetricMeminfo, MetricLoadAvg
+from telemetry_exporter.transport import TransportKafkaProducer
+from telemetry_exporter.config import TransportConfigKafka
+from telemetry_exporter.serializers import (
+    SerializerJson,
+    SerializerMessagePack,
+)
+
+logger = logging.getLogger('tesextractd')
+
+
+class TESextractor(ARunService):
+    def __init__(self, loop=None, **kwargs):
+        self.loop = loop
+        self.config = kwargs['config']
+        self.stats = kwargs['stats']
+        self.reconfig = kwargs['reconfig']
+        self.args = kwargs['args']
+        self.__reconnect_timeout = 5
+        self.queue = asyncio.Queue()
+
+    @property
+    def signals(self):
+        return {}
+
+    async def create_producer(self, config):
+        if self.args.serialization == 'msgpack':
+            serialization = SerializerMessagePack
+        else:
+            serialization = SerializerJson
+
+        while True:
+            try:
+                producer = await TransportKafkaProducer.connect(
+                    serialization,
+                    config,
+                )
+                logger.info(
+                    f'connected to broker {config.host} '
+                    f'{self.args.serialization}'
+                )
+                break
+            except Exception:
+                logger.fatal(
+                    f'can not create producer', exc_info=True
+                )
+                await asyncio.sleep(self.__reconnect_timeout)
+
+        while True:
+            try:
+                message = await self.queue.get()
+                await producer.process(message)
+                self.queue.task_done()
+                logger.info(f'message {message.type.name} has sent')
+            except Exception:
+                logger.error('can not process message', exc_info=True)
+
+            if self.queue.qsize() == 0:
+                await asyncio.sleep(1)
+
+    async def run(self):
+        try:
+            transport_config = TransportConfigKafka()
+
+            transport_config.host = self.args.bhost
+            transport_config.topic = self.args.btopic
+            transport_config.port = self.args.bport
+            transport_config.proto = self.args.bproto
+
+            if transport_config.proto == 'SSL':
+                transport_config.cafile = self.args.bcafile
+                transport_config.keyfile = self.args.bkeyfile
+                transport_config.certfile = self.args.bcertfile
+                transport_config.password = self.args.bpassword
+
+        except Exception:
+            logger.fatal('can not parse configuration', exc_info=True)
+            sys.exit(1)
+
+        hostname = socket.gethostname()
+
+        tasks = [
+            asyncio.create_task(t)
+
+            for t in [
+                MetricMeminfo(
+                    self.queue, labels=[hostname],
+                    interval=self.args.interval).start(),
+                MetricLoadAvg(
+                    self.queue, labels=[hostname],
+                    interval=3).start(),
+                self.create_producer(transport_config),
+            ]
+        ]
+
+        await asyncio.wait(tasks)
+
+
+args = {
+    '--interval': {'help': 'interval collecting', 'type': int, 'default': 5},
+    '--btype': {
+        'help': 'broker type',
+        'choices': ['kafka', 'rabbitmq'],
+        'required': True,
+    },
+    '--bhost': {'help': 'transport uri', 'type': str, 'default': 'localhost'},
+    '--bport': {'help': 'transport uri', 'type': int, 'default': 9092},
+    '--btopic': {'help': 'transport topic', 'type': str, 'required': True},
+    '--bproto': {
+        'help': 'broker protocol',
+        'choices': ['PLAINTEXT', 'SSL'],
+        'default': 'PLAINTEXT',
+    },
+    '--bcafile': {'help': 'CA cert', 'type': str, 'default': None},
+    '--bcertfile': {'help': 'path to cert', 'type': str, 'default': None},
+    '--bkeyfile': {'help': 'path to keyfile', 'type': str, 'default': None},
+    '--bpassword': {'help': 'cert password', 'type': str, 'default': None},
+    '--serialization': {
+        'help': 'serialization format',
+        'choices': ['json', 'msgpack'],
+        'required': True,
+    },
+}
+
+ARun(
+    name='tesextractd',
+    description='Telemetry Service Extractor',
+    args=args
+).start(TESextractor)
