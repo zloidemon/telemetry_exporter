@@ -1,0 +1,21 @@
+FROM python:3-slim
+
+ENV POSTGRES_HOST=
+ENV POSTGRES_PASSWORD=
+ENV POSTGRES_USER=
+ENV POSTGRES_DB=
+ENV POSTGRES_PORT=5432
+
+WORKDIR /database
+COPY database .
+
+RUN pip install --no-cache-dir alembic psycopg2-binary
+
+ENTRYPOINT cat alembic.template | sed \
+    -e "s|%%MIGRATOR_PARAMS%%|${MIGRATOR_PARAMS}|g" \
+    -e "s|%%POSTGRES_HOST%%|${POSTGRES_HOST}|g" \
+    -e "s|%%POSTGRES_PASSWORD%%|${POSTGRES_PASSWORD}|g" \
+    -e "s|%%POSTGRES_USER%%|${POSTGRES_USER}|g" \
+    -e "s|%%POSTGRES_PORT%%|${POSTGRES_PORT}|g" \
+    -e "s|%%POSTGRES_DB%%|${POSTGRES_DB}|g" > alembic.ini \
+    && alembic upgrade head 

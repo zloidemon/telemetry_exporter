@@ -1,0 +1,71 @@
+---
+version: '2'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:5.3.1
+    env_file:
+      - ../providers/local/env/zookeeper.env
+
+  kafka:
+    image: confluentinc/cp-kafka:5.3.1
+    depends_on:
+      - zookeeper
+    env_file:
+      - ../providers/local/env/kafka.env
+
+  database:
+    image: postgres:11.5
+    env_file:
+      - ../providers/local/env/database.env
+
+  migrator:
+    build:
+      dockerfile: Dockerfile//Dockerfile.database
+      context: ..
+    image: migrator
+    depends_on:
+      - database
+    env_file:
+      - ../providers/local/env/database.env
+
+  extractor:
+    build:
+      dockerfile: Dockerfile/Dockerfile.services
+      context: ..
+    image: telemetry
+    depends_on:
+      - kafka
+    command: [
+      "tesextractd",
+      "--bhost", "${BROKER_HOST}",
+      "--bport", "${BROKER_PORT}",
+      "--bproto", "${BROKER_PROTO}",
+      "--btopic", "${BROKER_TOPIC}",
+      "--btype", "${BROKER_TYPE}",
+      "--config", "${APP_CONFIG}",
+      "--interval", "${APP_INTERVAL}",
+      "--logconfig", "${APP_LOGCONFIG}",
+      "--serialization", "${APP_SERIALIZATION}",
+    ]
+
+  worker:
+    image: telemetry
+    depends_on:
+      - kafka
+      - database
+    command: [
+      "tesworkerd",
+      "--bhost", "${BROKER_HOST}",
+      "--bport", "${BROKER_PORT}",
+      "--bproto", "${BROKER_PROTO}",
+      "--btopic", "${BROKER_TOPIC}",
+      "--btype", "${BROKER_TYPE}",
+      "--bworkers", "${BROKER_WORKERS}",
+      "--config", "${APP_CONFIG}",
+      "--dbhost", "${POSTGRES_HOST}",
+      "--dbname", "${POSTGRES_DB}",
+      "--dbpass", "${POSTGRES_PASSWORD}",
+      "--dbuser", "${POSTGRES_USER}",
+      "--logconfig", "${APP_LOGCONFIG}",
+      "--serialization", "${APP_SERIALIZATION}",
+    ]

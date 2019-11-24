@@ -1,0 +1,18 @@
+FROM python:3 as builder
+
+WORKDIR /build
+
+COPY src .
+RUN make install && make test
+
+
+FROM python:3-slim
+
+WORKDIR /app
+
+COPY --from=builder /build/dist dist
+COPY conf conf
+
+RUN pip install --no-cache-dir --find-links=dist -r dist/requirements.txt \
+    && rm -fr dist
+

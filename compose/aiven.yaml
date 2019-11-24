@@ -1,0 +1,62 @@
+---
+version: '2'
+services:
+  migrator:
+    build:
+      dockerfile: Dockerfile/Dockerfile.database
+      context: ..
+    image: migrator
+    env_file:
+      - ../providers/aiven/env/database.env
+
+  extractor:
+    build:
+      dockerfile: Dockerfile/Dockerfile.services
+      context: ..
+    image: telemetry
+    volumes:
+      - ../providers/aiven/kafka:/app/kafka/ssl
+    command: [
+      "tesextractd",
+      "--bcafile", "${BROKER_CAFILE}",
+      "--bcertfile", "${BROKER_CERTFILE}",
+      "--bhost", "${BROKER_HOST}",
+      "--bkeyfile", "${BROKER_KEYFILE}",
+      "--bport", "${BROKER_PORT}",
+      "--bproto", "${BROKER_PROTO}",
+      "--btopic", "${BROKER_TOPIC}",
+      "--btype", "${BROKER_TYPE}",
+      "--config", "${APP_CONFIG}",
+      "--interval", "${APP_INTERVAL}",
+      "--logconfig", "${APP_LOGCONFIG}",
+      "--serialization", "${APP_SERIALIZATION}",
+    ]
+
+  worker:
+    image: telemetry
+    volumes:
+      - ../providers/aiven/kafka:/app/kafka/ssl
+      - ../providers/aiven/pg:/app/pg/ssl
+    command: [
+      "tesworkerd",
+      "--bcafile", "${BROKER_CAFILE}",
+      "--bcertfile", "${BROKER_CERTFILE}",
+      "--bhost", "${BROKER_HOST}",
+      "--bkeyfile", "${BROKER_KEYFILE}",
+      "--bport", "${BROKER_PORT}",
+      "--bproto", "${BROKER_PROTO}",
+      "--btopic", "${BROKER_TOPIC}",
+      "--btype", "${BROKER_TYPE}",
+      "--btype", "${BROKER_TYPE}",
+      "--bworkers", "${BROKER_WORKERS}",
+      "--config", "${APP_CONFIG}",
+      "--dbcafile", "${POSTGRES_CAFILE}",
+      "--dbhost", "${POSTGRES_HOST}",
+      "--dbname", "${POSTGRES_DB}",
+      "--dbpass", "${POSTGRES_PASSWORD}",
+      "--dbport", "${POSTGRES_PORT}",
+      "--dbssl", "true",
+      "--dbuser", "${POSTGRES_USER}",
+      "--logconfig", "${APP_LOGCONFIG}",
+      "--serialization", "${APP_SERIALIZATION}",
+    ]
