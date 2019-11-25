@@ -20,7 +20,7 @@ services:
 
   migrator:
     build:
-      dockerfile: Dockerfile//Dockerfile.database
+      dockerfile: Dockerfile/Dockerfile.database
       context: ..
     image: migrator
     depends_on:
